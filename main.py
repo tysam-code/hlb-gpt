@@ -15,6 +15,7 @@ try:
 except NameError:
   pass ## we're still good
 """
+
 import functools
 from functools import partial
 import urllib
@@ -92,10 +93,10 @@ if not os.path.exists(hyp['misc']['data_location']):
 
         raw_data_source = 'https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-raw-v1.zip'
         raw_data_cache = './data_raw/' # where to cache the data after downloading
-        
+
         if not os.path.isfile(raw_data_cache):
-            os.makedirs(raw_data_cache, exist_ok=True)
-            urllib.request.urlretrieve(raw_data_source, raw_data_cache+'data.zip')
+                os.makedirs(raw_data_cache, exist_ok=True)
+                urllib.request.urlretrieve(raw_data_source, f'{raw_data_cache}data.zip')
 
         with zipfile.ZipFile('data_raw/data.zip', 'r') as zip_ref:
             zip_ref.extractall('data_raw/')
@@ -122,10 +123,10 @@ if not os.path.exists(hyp['misc']['data_location']):
         print("completed the tokenization process!")
 
 else:
-    ## This is effectively instantaneous, and takes us practically straight to where the dataloader-loaded dataset would be. :)
-    ## So as long as you run the above loading process once, and keep the file on the disc it's specified by default in the above
-    ## hyp dictionary, then we should be good. :)
-    data = torch.load(hyp['misc']['data_location'])
+        ## This is effectively instantaneous, and takes us practically straight to where the dataloader-loaded dataset would be. :)
+        ## So as long as you run the above loading process once, and keep the file on the disc it's specified by default in the above
+        ## hyp dictionary, then we should be good. :)
+        data = torch.load(hyp['misc']['data_location'])
 
 
 ## As you'll note above and below, one difference is that we don't time loading the raw data to GPU since it's such a variable operation
@@ -225,61 +226,61 @@ class SpeedyLangNet(nn.Module):
         return x
 
 def make_net():
-    # Note, you have to specify any arguments overlapping with defaults (i.e. everything but in/out depths) as kwargs so that they are properly overridden (TODO cleanup somehow?)
-    network_dict = nn.ModuleDict({
-        'embedding': nn.Embedding(hyp['misc']['num_tokens'], hyp['net']['residual_depth']),
-        'position': PositionEmbedding(hyp['misc']['sequence_length'], hyp['net']['residual_depth']),
-        'norm': LayerNorm(hyp['net']['residual_depth'], eps=1e-5, bias=False),
-        'mlp_layers': nn.ModuleList([MLPBlock(hyp['net']['residual_depth']) for _ in range(hyp['net']['num_blocks'])]),
-        'attn_layers': nn.ModuleList([AttentionBlock(hyp['net']['residual_depth'], hyp['misc']['sequence_length'], hyp['net']['num_heads']) for _ in range(hyp['net']['num_blocks'])]),
-        'outputs': nn.Linear(hyp['net']['residual_depth'], hyp['misc']['num_tokens'], bias=False),
-    })
+        # Note, you have to specify any arguments overlapping with defaults (i.e. everything but in/out depths) as kwargs so that they are properly overridden (TODO cleanup somehow?)
+        network_dict = nn.ModuleDict({
+            'embedding': nn.Embedding(hyp['misc']['num_tokens'], hyp['net']['residual_depth']),
+            'position': PositionEmbedding(hyp['misc']['sequence_length'], hyp['net']['residual_depth']),
+            'norm': LayerNorm(hyp['net']['residual_depth'], eps=1e-5, bias=False),
+            'mlp_layers': nn.ModuleList([MLPBlock(hyp['net']['residual_depth']) for _ in range(hyp['net']['num_blocks'])]),
+            'attn_layers': nn.ModuleList([AttentionBlock(hyp['net']['residual_depth'], hyp['misc']['sequence_length'], hyp['net']['num_heads']) for _ in range(hyp['net']['num_blocks'])]),
+            'outputs': nn.Linear(hyp['net']['residual_depth'], hyp['misc']['num_tokens'], bias=False),
+        })
 
-    net = SpeedyLangNet(network_dict)
-    net = net.to(hyp['misc']['device'])
-    net.train()
+        net = SpeedyLangNet(network_dict)
+        net = net.to(hyp['misc']['device'])
+        net.train()
 
-    # Tie the input and output weights. Feel free to experiment with this!
-    net.net_dict['embedding'].weight = net.net_dict['outputs'].weight
+        # Tie the input and output weights. Feel free to experiment with this!
+        net.net_dict['embedding'].weight = net.net_dict['outputs'].weight
 
-    for name, parameter in net.named_parameters():
-        # TODO: Way to tidy this up for a future release?
-        # Initialize both embedding layers (embedding and position) and the non-bias values of the 'normal' linear layers (outputs, expand, in_proj)
-        if 'embedding' in name or 'position' in name or (('outputs' in name or 'expand' in name or 'in_proj' in name) and 'weight' in name):
-            torch.nn.init.normal_(parameter.data, mean=0., std=.02) # normal init
-        elif ((('project' in name and 'mlp' in name) or 'out_proj' in name or 'c_proj' in name) and 'weight' in name):
-            # As noted in NanoGPT, this is from the GPT-2 paper. Also very similar from what I seee to the FixUp initialization for ResNets
-            torch.nn.init.normal_(parameter.data, mean=0., std=.02/((2 * hyp['net']['num_blocks'])**.5)) # keeps variance from exploding when adding to the residual
-        elif 'norm' in name:
-            pass # the norms already get initialized to values that we want -- we just include this so that we can warn the user if they add a new param
-                 # that isn't initialized correctly in the future here.
-        else:
-            print(f"warning, no initialization keyword match for: {name}!")
+        for name, parameter in net.named_parameters():
+                        # TODO: Way to tidy this up for a future release?
+                        # Initialize both embedding layers (embedding and position) and the non-bias values of the 'normal' linear layers (outputs, expand, in_proj)
+                if 'embedding' in name or 'position' in name or (('outputs' in name or 'expand' in name or 'in_proj' in name) and 'weight' in name):
+                        torch.nn.init.normal_(parameter.data, mean=0., std=.02) # normal init
+                elif ((('project' in name and 'mlp' in name) or 'out_proj' in name or 'c_proj' in name) and 'weight' in name):
+                    # As noted in NanoGPT, this is from the GPT-2 paper. Also very similar from what I seee to the FixUp initialization for ResNets
+                    torch.nn.init.normal_(parameter.data, mean=0., std=.02/((2 * hyp['net']['num_blocks'])**.5)) # keeps variance from exploding when adding to the residual
+                elif 'norm' not in name:
+                        print(f"warning, no initialization keyword match for: {name}!")
 
-    # We compile the network later so that we can include compilation time inside of the training time to be an honest comparison against other methods.
-    return net
+        # We compile the network later so that we can include compilation time inside of the training time to be an honest comparison against other methods.
+        return net
 
 
 def get_net_mfu_and_param_counts(net, batchsize, gradient_accumulation_steps, avg_time_per_batch):
-    assert hyp['misc']['dtype'] in (torch.half, torch.bfloat16), "Flops calculation is inaccurate with types other than half-precision types"
-    flops_dict = {}
-    # The below is a very easy way to estimate total registered param counts. I believe the reason that we don't count the embedding-only layers by default
-    # is because they function as a lookup table (so, technically not really FLOPs at all)
-    params_dict = {name: parameter.numel() if not 'position' in name else 0 for name, parameter in net.named_parameters()}
-    total_num_params = sum(params_dict.values())
+        assert hyp['misc']['dtype'] in (torch.half, torch.bfloat16), "Flops calculation is inaccurate with types other than half-precision types"
+        flops_dict = {}
+            # The below is a very easy way to estimate total registered param counts. I believe the reason that we don't count the embedding-only layers by default
+            # is because they function as a lookup table (so, technically not really FLOPs at all)
+        params_dict = {
+            name: parameter.numel() if 'position' not in name else 0
+            for name, parameter in net.named_parameters()
+        }
+        total_num_params = sum(params_dict.values())
 
-    # Rough flops estimate, see https://github.com/karpathy/nanoGPT/blob/ae3a8d5fdd3ddb8b13fab182723476523961e3ab/model.py#L327 for more info
-    # Originally sourced from the PaLM paper, appendix B: https://arxiv.org/abs/2204.02311
-    # This includes both the forward and backwards passes :D
-    flops_for_single_input_token = 6 * total_num_params + 12 * hyp['net']['num_blocks'] * hyp['net']['residual_depth'] * hyp['misc']['sequence_length']
-    flops_for_full_sequence = flops_for_single_input_token * hyp['misc']['sequence_length']
-    flops_for_single_step = flops_for_full_sequence * batchsize * gradient_accumulation_steps
+        # Rough flops estimate, see https://github.com/karpathy/nanoGPT/blob/ae3a8d5fdd3ddb8b13fab182723476523961e3ab/model.py#L327 for more info
+        # Originally sourced from the PaLM paper, appendix B: https://arxiv.org/abs/2204.02311
+        # This includes both the forward and backwards passes :D
+        flops_for_single_input_token = 6 * total_num_params + 12 * hyp['net']['num_blocks'] * hyp['net']['residual_depth'] * hyp['misc']['sequence_length']
+        flops_for_full_sequence = flops_for_single_input_token * hyp['misc']['sequence_length']
+        flops_for_single_step = flops_for_full_sequence * batchsize * gradient_accumulation_steps
 
-    current_flops_achieved = flops_for_single_step/avg_time_per_batch
-    a100_total_possible_flops = 312e12 # TODO: is there a good way to make this more flexible? 
-    mfu_value = current_flops_achieved / a100_total_possible_flops
+        current_flops_achieved = flops_for_single_step/avg_time_per_batch
+        a100_total_possible_flops = 312e12 # TODO: is there a good way to make this more flexible? 
+        mfu_value = current_flops_achieved / a100_total_possible_flops
 
-    return mfu_value, params_dict
+        return mfu_value, params_dict
 
 
 #############################################
@@ -388,104 +389,106 @@ def eval(net):
     return val_acc, val_loss, val_perplexity
 
 def main():
-    # Initializing constants for the whole run.
-    total_time_seconds = 0.
-    current_steps = 0
+        # Initializing constants for the whole run.
+        total_time_seconds = 0.
+        current_steps = 0
 
-    num_steps_per_epoch = len(data['train']) // (batchsize * hyp['misc']['sequence_length'])
-    # Note: This is a static calculation of the total number of microbatches up front, you may have to change this depending upon what you're tinkering with
-    total_microbatch_steps = hyp['opt']['total_train_steps'] * hyp['opt']['accumulate_steps']
-    
-
-    # Get network
-    net = make_net()
-
-    ## Stowing the creation of these into a helper function to make things a bit more readable....
-    params_non_decay, params_decay = init_split_parameter_dictionaries(net)
-    adamw_speedup_mode = {'fused': True} if using_pytorch_2 else {'foreach': True}
-    opt = torch.optim.AdamW([params_non_decay, params_decay], **adamw_speedup_mode)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=opt, max_lr=hyp['opt']['lr'], total_steps=hyp['opt']['total_train_steps'], pct_start=hyp['opt']['warmup_percent'], anneal_strategy='cos', cycle_momentum=False, div_factor=1e2, final_div_factor=.05)
-
-    ## For accurately timing GPU code
-    starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-    torch.cuda.synchronize() ## clean up any pre-net setup operations
-    starter.record()
-    
-    # If you have pytorch 2.0, compiling the network before training can help us a ton
-    # If you need to/are brave enough, check the top of this file for a pip command to install it.
-    # It can bork your pre-existing setup though if you're not careful, so bewarb! D: :D
-    if using_pytorch_2:
-        net = torch.compile(net)
-
-    #################
-    # Training Mode #
-    #################
-    net.train()
-
-    val_loss = None
-    val_acc = None
-    val_perplexity = None
-
-    batch_iter_kwargs = {'data_dict': data, 'key': 'train', 'batchsize': batchsize, 'num_steps': total_microbatch_steps, 'sequence_length': hyp['misc']['sequence_length']}
-
-    for microbatch_step, (inputs, targets) in enumerate(get_batches(**batch_iter_kwargs)):
-        with autocast_tensors:
-            outputs = net(inputs)
-
-        loss = loss_fn(outputs.flatten(0, 1), targets.flatten(0, 1))
-
-        # Quick non-eval summary every N training steps
-        if current_steps % 10 == 0 and microbatch_step % hyp['opt']['accumulate_steps'] == 0 and not current_steps % hyp['opt']['eval_iter'] == 0:
-            train_acc = (outputs.detach().argmax(-1) == targets).float().mean().item()
-            train_loss = loss.detach().cpu().item()
-            train_summary_variables = {'epoch': microbatch_step//num_steps_per_epoch, 'current_steps': current_steps, 'train_loss': train_loss, 'train_acc': train_acc}
-            print_training_details(list(map(partial(format_for_table, locals=train_summary_variables), logging_columns_list)))
-
-        loss.backward()
-
-        ## Once we've accumulated steps over all of our microbatches, take a single full-batchsize step.
-        if microbatch_step % hyp['opt']['accumulate_steps'] == 0:
-            ## Step the optimizer, then scheduler
-            opt.step()
-
-            scheduler.step()
-
-            ## Using 'set_to_none' I believe is slightly faster (albeit riskier w/ funky gradient update workflows) than under the default 'set to zero' method
-            opt.zero_grad(set_to_none=True)
-            current_steps += 1
-
-            # Since we're not running over epochs anymore, we have to manually calculate what epoch it is.
-            epoch = microbatch_step//num_steps_per_epoch
-            
-            if current_steps % hyp['opt']['eval_iter'] == 0:
-                ender.record()
-                torch.cuda.synchronize()
-                total_time_seconds += 1e-3 * starter.elapsed_time(ender)
-                train_loss = loss.detach().cpu().item() # To have an updated loss to compare with the eval loss
-                
-                opt.zero_grad(set_to_none=True)
-                net.eval()
-
-                val_acc, val_loss, val_perplexity = eval(net)
-                average_time_per_batch = 1e-3 * starter.elapsed_time(ender)/hyp['opt']['eval_iter']
-                
-                a100_mfu, _ = get_net_mfu_and_param_counts(net, batchsize, hyp['opt']['accumulate_steps'], avg_time_per_batch=average_time_per_batch)
-                is_final_eval = (current_steps == hyp['opt']['total_train_steps']) # If we're at the end of training, do a full eval instead
-
-                # Print out our training details (sorry for the complexity, the whole logging business here is a bit of a hot mess once the columns need to be aligned and such....)
-                ## We also check to see if we're on our final eval loop (assuming that max_num_steps lines up with the eval_iter value) so we can print the 'bottom' of the table for each round.
-                print_training_details(list(map(partial(format_for_table, locals=locals()), logging_columns_list)), is_final_entry=is_final_eval)
-                torch.cuda.synchronize()
-                starter.record()
-                net.train() # Functionally shouldn't do anything with the base network, just adding this to guard against any bugs for any future changes that do require this <3 <3 <3
+        num_steps_per_epoch = len(data['train']) // (batchsize * hyp['misc']['sequence_length'])
+        # Note: This is a static calculation of the total number of microbatches up front, you may have to change this depending upon what you're tinkering with
+        total_microbatch_steps = hyp['opt']['total_train_steps'] * hyp['opt']['accumulate_steps']
 
 
-    return net.eval(), val_loss # Return the final validation loss achieved (not using the 'best validation loss' selection strategy, which I think is okay here....)
+        # Get network
+        net = make_net()
+
+        ## Stowing the creation of these into a helper function to make things a bit more readable....
+        params_non_decay, params_decay = init_split_parameter_dictionaries(net)
+        adamw_speedup_mode = {'fused': True} if using_pytorch_2 else {'foreach': True}
+        opt = torch.optim.AdamW([params_non_decay, params_decay], **adamw_speedup_mode)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=opt, max_lr=hyp['opt']['lr'], total_steps=hyp['opt']['total_train_steps'], pct_start=hyp['opt']['warmup_percent'], anneal_strategy='cos', cycle_momentum=False, div_factor=1e2, final_div_factor=.05)
+
+        ## For accurately timing GPU code
+        starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize() ## clean up any pre-net setup operations
+        starter.record()
+
+        # If you have pytorch 2.0, compiling the network before training can help us a ton
+        # If you need to/are brave enough, check the top of this file for a pip command to install it.
+        # It can bork your pre-existing setup though if you're not careful, so bewarb! D: :D
+        if using_pytorch_2:
+            net = torch.compile(net)
+
+        #################
+        # Training Mode #
+        #################
+        net.train()
+
+        val_loss = None
+        val_acc = None
+        val_perplexity = None
+
+        batch_iter_kwargs = {'data_dict': data, 'key': 'train', 'batchsize': batchsize, 'num_steps': total_microbatch_steps, 'sequence_length': hyp['misc']['sequence_length']}
+
+        for microbatch_step, (inputs, targets) in enumerate(get_batches(**batch_iter_kwargs)):
+                with autocast_tensors:
+                    outputs = net(inputs)
+
+                loss = loss_fn(outputs.flatten(0, 1), targets.flatten(0, 1))
+
+                        # Quick non-eval summary every N training steps
+                if (current_steps % 10 == 0
+                    and microbatch_step % hyp['opt']['accumulate_steps'] == 0
+                    and current_steps % hyp['opt']['eval_iter'] != 0):
+                        train_acc = (outputs.detach().argmax(-1) == targets).float().mean().item()
+                        train_loss = loss.detach().cpu().item()
+                        train_summary_variables = {'epoch': microbatch_step//num_steps_per_epoch, 'current_steps': current_steps, 'train_loss': train_loss, 'train_acc': train_acc}
+                        print_training_details(list(map(partial(format_for_table, locals=train_summary_variables), logging_columns_list)))
+
+                loss.backward()
+
+                ## Once we've accumulated steps over all of our microbatches, take a single full-batchsize step.
+                if microbatch_step % hyp['opt']['accumulate_steps'] == 0:
+                    ## Step the optimizer, then scheduler
+                    opt.step()
+
+                    scheduler.step()
+
+                    ## Using 'set_to_none' I believe is slightly faster (albeit riskier w/ funky gradient update workflows) than under the default 'set to zero' method
+                    opt.zero_grad(set_to_none=True)
+                    current_steps += 1
+
+                    # Since we're not running over epochs anymore, we have to manually calculate what epoch it is.
+                    epoch = microbatch_step//num_steps_per_epoch
+
+                    if current_steps % hyp['opt']['eval_iter'] == 0:
+                        ender.record()
+                        torch.cuda.synchronize()
+                        total_time_seconds += 1e-3 * starter.elapsed_time(ender)
+                        train_loss = loss.detach().cpu().item() # To have an updated loss to compare with the eval loss
+
+                        opt.zero_grad(set_to_none=True)
+                        net.eval()
+
+                        val_acc, val_loss, val_perplexity = eval(net)
+                        average_time_per_batch = 1e-3 * starter.elapsed_time(ender)/hyp['opt']['eval_iter']
+
+                        a100_mfu, _ = get_net_mfu_and_param_counts(net, batchsize, hyp['opt']['accumulate_steps'], avg_time_per_batch=average_time_per_batch)
+                        is_final_eval = (current_steps == hyp['opt']['total_train_steps']) # If we're at the end of training, do a full eval instead
+
+                        # Print out our training details (sorry for the complexity, the whole logging business here is a bit of a hot mess once the columns need to be aligned and such....)
+                        ## We also check to see if we're on our final eval loop (assuming that max_num_steps lines up with the eval_iter value) so we can print the 'bottom' of the table for each round.
+                        print_training_details(list(map(partial(format_for_table, locals=locals()), logging_columns_list)), is_final_entry=is_final_eval)
+                        torch.cuda.synchronize()
+                        starter.record()
+                        net.train() # Functionally shouldn't do anything with the base network, just adding this to guard against any bugs for any future changes that do require this <3 <3 <3
+
+
+        return net.eval(), val_loss # Return the final validation loss achieved (not using the 'best validation loss' selection strategy, which I think is okay here....)
 
 
 if __name__ == "__main__":
-    val_loss_list = []
-    for i in range(5):
-        _, val_loss = main()
-        val_loss_list.append(val_loss)
-    print(f"Average final val loss: {sum(val_loss_list)/len(val_loss_list)}") # TODO add variance as well, later
+        val_loss_list = []
+        for _ in range(5):
+                _, val_loss = main()
+                val_loss_list.append(val_loss)
+        print(f"Average final val loss: {sum(val_loss_list)/len(val_loss_list)}") # TODO add variance as well, later
