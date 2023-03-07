@@ -15,6 +15,7 @@ try:
 except NameError:
   pass ## we're still good
 """
+
 import functools
 from functools import partial
 import urllib
@@ -88,38 +89,38 @@ autocast_tensors = torch.amp.autocast(device_type=hyp['misc']['device'], dtype=h
 #############################################
 
 if not os.path.exists(hyp['misc']['data_location']):
-        print("downloading data and tokenizing (1-2 min)")
+    print("downloading data and tokenizing (1-2 min)")
 
-        raw_data_source = 'https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-raw-v1.zip'
-        raw_data_cache = './data_raw/' # where to cache the data after downloading
-        
-        if not os.path.isfile(raw_data_cache):
-            os.makedirs(raw_data_cache, exist_ok=True)
-            urllib.request.urlretrieve(raw_data_source, raw_data_cache+'data.zip')
+    raw_data_source = 'https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-raw-v1.zip'
+    raw_data_cache = './data_raw/' # where to cache the data after downloading
 
-        with zipfile.ZipFile('data_raw/data.zip', 'r') as zip_ref:
-            zip_ref.extractall('data_raw/')
+    if not os.path.isfile(raw_data_cache):
+        os.makedirs(raw_data_cache, exist_ok=True)
+        urllib.request.urlretrieve(raw_data_source, f'{raw_data_cache}data.zip')
 
-        with open('data_raw/wikitext-103-raw/wiki.train.raw', 'r') as data_file:
-            raw_train_data = data_file.read()
+    with zipfile.ZipFile('data_raw/data.zip', 'r') as zip_ref:
+        zip_ref.extractall('data_raw/')
 
-        with open('data_raw/wikitext-103-raw/wiki.valid.raw', 'r') as data_file:
-            raw_eval_data = data_file.read()
+    with open('data_raw/wikitext-103-raw/wiki.train.raw', 'r') as data_file:
+        raw_train_data = data_file.read()
 
-        tokenizer = tiktoken.get_encoding("gpt2")
-        raw_tokenized_train = tokenizer.encode_ordinary(raw_train_data)
-        raw_tokenized_eval = tokenizer.encode_ordinary(raw_eval_data)
+    with open('data_raw/wikitext-103-raw/wiki.valid.raw', 'r') as data_file:
+        raw_eval_data = data_file.read()
 
-        train_tokenized = torch.tensor(raw_tokenized_train, device=hyp['misc']['device'], dtype=torch.int) # int64 is likely overkill for the amount of tokens we have...
-        eval_tokenized = torch.tensor(raw_tokenized_eval, device=hyp['misc']['device'], dtype=torch.int)
+    tokenizer = tiktoken.get_encoding("gpt2")
+    raw_tokenized_train = tokenizer.encode_ordinary(raw_train_data)
+    raw_tokenized_eval = tokenizer.encode_ordinary(raw_eval_data)
 
-        data = {
-            'train': train_tokenized,
-            'eval': eval_tokenized
-            }
+    train_tokenized = torch.tensor(raw_tokenized_train, device=hyp['misc']['device'], dtype=torch.int) # int64 is likely overkill for the amount of tokens we have...
+    eval_tokenized = torch.tensor(raw_tokenized_eval, device=hyp['misc']['device'], dtype=torch.int)
 
-        torch.save(data, hyp['misc']['data_location'])
-        print("completed the tokenization process!")
+    data = {
+        'train': train_tokenized,
+        'eval': eval_tokenized
+        }
+
+    torch.save(data, hyp['misc']['data_location'])
+    print("completed the tokenization process!")
 
 else:
     ## This is effectively instantaneous, and takes us practically straight to where the dataloader-loaded dataset would be. :)
@@ -188,15 +189,15 @@ class MLPBlock(nn.Module):
 
 
 class PositionEmbedding(nn.Module):
-  def __init__(self, sequence_length, num_features):
-      super().__init__()
-      ## This is a learnable embedding so that the network can tag features by how far back in time they are
-      self.position_embedding = nn.Embedding(sequence_length, num_features)
-  
-  def forward(self, x):
-      # You can customize this function as needed in your experiments. Have fun! :D
-      range_lookup = torch.arange(x.shape[1], device=x.device)
-      return self.position_embedding(range_lookup).unsqueeze(0) # unsqueeze since we only need one value for the entire batch dimension :)
+    def __init__(self, sequence_length, num_features):
+        super().__init__()
+        ## This is a learnable embedding so that the network can tag features by how far back in time they are
+        self.position_embedding = nn.Embedding(sequence_length, num_features)
+
+    def forward(self, x):
+        # You can customize this function as needed in your experiments. Have fun! :D
+        range_lookup = torch.arange(x.shape[1], device=x.device)
+        return self.position_embedding(range_lookup).unsqueeze(0) # unsqueeze since we only need one value for the entire batch dimension :)
 
 
 #############################################
@@ -224,6 +225,7 @@ class SpeedyLangNet(nn.Module):
         x = self.net_dict['outputs'](x)
         return x
 
+
 def make_net():
     # Note, you have to specify any arguments overlapping with defaults (i.e. everything but in/out depths) as kwargs so that they are properly overridden (TODO cleanup somehow?)
     network_dict = nn.ModuleDict({
@@ -250,10 +252,7 @@ def make_net():
         elif ((('project' in name and 'mlp' in name) or 'out_proj' in name or 'c_proj' in name) and 'weight' in name):
             # As noted in NanoGPT, this is from the GPT-2 paper. Also very similar from what I seee to the FixUp initialization for ResNets
             torch.nn.init.normal_(parameter.data, mean=0., std=.02/((2 * hyp['net']['num_blocks'])**.5)) # keeps variance from exploding when adding to the residual
-        elif 'norm' in name:
-            pass # the norms already get initialized to values that we want -- we just include this so that we can warn the user if they add a new param
-                 # that isn't initialized correctly in the future here.
-        else:
+        elif 'norm' not in name:
             print(f"warning, no initialization keyword match for: {name}!")
 
     # We compile the network later so that we can include compilation time inside of the training time to be an honest comparison against other methods.
@@ -265,7 +264,10 @@ def get_net_mfu_and_param_counts(net, batchsize, gradient_accumulation_steps, av
     flops_dict = {}
     # The below is a very easy way to estimate total registered param counts. I believe the reason that we don't count the embedding-only layers by default
     # is because they function as a lookup table (so, technically not really FLOPs at all)
-    params_dict = {name: parameter.numel() if not 'position' in name else 0 for name, parameter in net.named_parameters()}
+    params_dict = {
+        name: parameter.numel() if 'position' not in name else 0
+        for name, parameter in net.named_parameters()
+    }
     total_num_params = sum(params_dict.values())
 
     # Rough flops estimate, see https://github.com/karpathy/nanoGPT/blob/ae3a8d5fdd3ddb8b13fab182723476523961e3ab/model.py#L327 for more info
@@ -299,7 +301,7 @@ def get_batches(data_dict, key, batchsize, sequence_length, num_steps):
 
     # No augmentation for now (but maybe later?)
     tokens = data_dict[key].to(hyp['misc']['device'])
- 
+
     for idx in range(num_steps):
         if not (idx+1)*batchsize > shuffled.shape[0]: ## Continue if there are tokens left to consume
             batch_starting_indexes = shuffled[idx*batchsize:(idx+1)*batchsize]
@@ -310,7 +312,7 @@ def get_batches(data_dict, key, batchsize, sequence_length, num_steps):
             batch_indexes_flattened = batch_indexes.flatten()
 
             yield torch.take_along_dim(tokens, batch_indexes_flattened, dim=0).view(batchsize, sequence_length).long(), \
-                  torch.take_along_dim(tokens, batch_indexes_flattened+1, dim=0).view(batchsize, sequence_length).long() # Returns each token as the input, then the _next_ token in the sequence as a target
+                torch.take_along_dim(tokens, batch_indexes_flattened+1, dim=0).view(batchsize, sequence_length).long()  # Returns each token as the input, then the _next_ token in the sequence as a target
 
 
 def init_split_parameter_dictionaries(net):
@@ -332,6 +334,8 @@ def init_split_parameter_dictionaries(net):
 loss_fn = nn.CrossEntropyLoss(reduction='mean', ignore_index=-1)
 
 logging_columns_list = ['epoch', 'current_steps', 'train_loss', 'val_loss', 'val_perplexity', 'train_acc', 'val_acc', 'a100_mfu', 'total_time_seconds']
+
+
 # define the printing function and print the column heads
 def print_training_details(columns_list, separator_left='|  ', separator_right='  ', final="|", column_heads_only=False, is_final_entry=False):
     print_string = ""
@@ -339,18 +343,18 @@ def print_training_details(columns_list, separator_left='|  ', separator_right='
         for column_head_name in columns_list:
             print_string += separator_left + column_head_name + separator_right
         print_string += final
-        print('-'*(len(print_string))) # print the top bar
+        print('-'*(len(print_string)))  # print the top bar
         print(print_string)
-        print('-'*(len(print_string))) # print the bottom bar
+        print('-'*(len(print_string)))  # print the bottom bar
     else:
         for column_value in columns_list:
             print_string += separator_left + column_value + separator_right
         print_string += final
         print(print_string)
     if is_final_entry:
-        print('-'*(len(print_string))) # print the final output bar
+        print('-'*(len(print_string)))  # print the final output bar
 
-print_training_details(logging_columns_list, column_heads_only=True) ## print out the training column heads before we print the actual content for each run.
+print_training_details(logging_columns_list, column_heads_only=True)  ## print out the training column heads before we print the actual content for each run.
 
 # We basically need to look up local variables by name so we can have the names, so we can pad to the proper column width.
 ## Printing stuff in the terminal can get tricky and in a previous life, this used an outside library. But some of the required stuff
@@ -359,6 +363,7 @@ format_for_table = lambda x, locals: (f"{locals[x]}".rjust(len(x))) \
                                           if x in locals and type(locals[x]) == int else "{:0.4f}".format(locals[x]).rjust(len(x)) \
                                       if x in locals and locals[x] is not None \
                                       else " "*len(x)
+
 
 ########################################
 #           Train and Eval             #
@@ -387,6 +392,7 @@ def eval(net):
 
     return val_acc, val_loss, val_perplexity
 
+
 def main():
     # Initializing constants for the whole run.
     total_time_seconds = 0.
@@ -395,7 +401,6 @@ def main():
     num_steps_per_epoch = len(data['train']) // (batchsize * hyp['misc']['sequence_length'])
     # Note: This is a static calculation of the total number of microbatches up front, you may have to change this depending upon what you're tinkering with
     total_microbatch_steps = hyp['opt']['total_train_steps'] * hyp['opt']['accumulate_steps']
-    
 
     # Get network
     net = make_net()
@@ -410,7 +415,7 @@ def main():
     starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     torch.cuda.synchronize() ## clean up any pre-net setup operations
     starter.record()
-    
+
     # If you have pytorch 2.0, compiling the network before training can help us a ton
     # If you need to/are brave enough, check the top of this file for a pip command to install it.
     # It can bork your pre-existing setup though if you're not careful, so bewarb! D: :D
@@ -434,8 +439,10 @@ def main():
 
         loss = loss_fn(outputs.flatten(0, 1), targets.flatten(0, 1))
 
-        # Quick non-eval summary every N training steps
-        if current_steps % 10 == 0 and microbatch_step % hyp['opt']['accumulate_steps'] == 0 and not current_steps % hyp['opt']['eval_iter'] == 0:
+                # Quick non-eval summary every N training steps
+        if (current_steps % 10 == 0
+            and microbatch_step % hyp['opt']['accumulate_steps'] == 0
+                and current_steps % hyp['opt']['eval_iter'] != 0):
             train_acc = (outputs.detach().argmax(-1) == targets).float().mean().item()
             train_loss = loss.detach().cpu().item()
             train_summary_variables = {'epoch': microbatch_step//num_steps_per_epoch, 'current_steps': current_steps, 'train_loss': train_loss, 'train_acc': train_acc}
@@ -456,19 +463,19 @@ def main():
 
             # Since we're not running over epochs anymore, we have to manually calculate what epoch it is.
             epoch = microbatch_step//num_steps_per_epoch
-            
+
             if current_steps % hyp['opt']['eval_iter'] == 0:
                 ender.record()
                 torch.cuda.synchronize()
                 total_time_seconds += 1e-3 * starter.elapsed_time(ender)
                 train_loss = loss.detach().cpu().item() # To have an updated loss to compare with the eval loss
-                
+
                 opt.zero_grad(set_to_none=True)
                 net.eval()
 
                 val_acc, val_loss, val_perplexity = eval(net)
                 average_time_per_batch = 1e-3 * starter.elapsed_time(ender)/hyp['opt']['eval_iter']
-                
+
                 a100_mfu, _ = get_net_mfu_and_param_counts(net, batchsize, hyp['opt']['accumulate_steps'], avg_time_per_batch=average_time_per_batch)
                 is_final_eval = (current_steps == hyp['opt']['total_train_steps']) # If we're at the end of training, do a full eval instead
 
@@ -477,15 +484,14 @@ def main():
                 print_training_details(list(map(partial(format_for_table, locals=locals()), logging_columns_list)), is_final_entry=is_final_eval)
                 torch.cuda.synchronize()
                 starter.record()
-                net.train() # Functionally shouldn't do anything with the base network, just adding this to guard against any bugs for any future changes that do require this <3 <3 <3
-
+                net.train()  # Functionally shouldn't do anything with the base network, just adding this to guard against any bugs for any future changes that do require this <3 <3 <3
 
     return net.eval(), val_loss # Return the final validation loss achieved (not using the 'best validation loss' selection strategy, which I think is okay here....)
 
 
 if __name__ == "__main__":
     val_loss_list = []
-    for i in range(5):
-        _, val_loss = main()
-        val_loss_list.append(val_loss)
-    print(f"Average final val loss: {sum(val_loss_list)/len(val_loss_list)}") # TODO add variance as well, later
+    for _ in range(5):
+            _, val_loss = main()
+            val_loss_list.append(val_loss)
+    print(f"Average final val loss: {sum(val_loss_list)/len(val_loss_list)}")  # TODO add variance as well, later
