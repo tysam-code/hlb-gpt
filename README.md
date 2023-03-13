@@ -24,10 +24,10 @@ Goals:
 * eventual world-record-speed single-GPU training times on at least one LLM benchmark (currently via the A100! :D)
 
 
-This code implements a fast-training language model baseline that achieves under ~3.8 val loss (44.7 perplexity) on WikiText-103 in just over 6 minutes. It is currently a distilled, feature-pruned, relatively faithful reimplementation of a basic GPT language model as defined in Karpathy's excellent [nanoGPT](https://github.com/karpathy/nanoGPT) repository**. The only differences in this implentation that I know of are different function calls for the attention operation, the full-accuracy Pytorch GELU function, and the native PyTorch OneCycle scheduler. There are also different default hyperparameters specific to these short runs. For the rationale behind the 3.8 val loss target, please see the '[Why 3.8 Val Loss?](#why-3.8-val-loss?)' section.
+This code implements a fast-training language model baseline that achieves under ~3.8 val loss (44.7 perplexity) on WikiText-103 in just over 3 minutes. It is currently a relatively minimal model based on relatively faithful reimplementation of a basic GPT language model as defined in Karpathy's excellent [nanoGPT](https://github.com/karpathy/nanoGPT) repository**. We've made a number of changes to improve the training speed on the tiny (~100M) training set that we use. For the rationale behind the 3.8 val loss target, please see the '[Why 3.8 Val Loss?](#why-3.8-val-loss?)' section.
 
 
-This is a very focused implementation which attempts to maximize code understandability and minimize code length. At the same time, it aims to be very hackable to let people test out new ideas and get back initial results rapidly. We also want to keep this code as accessible as possible to a wide range of users and usecases -- mainly through layout, helpful code comments, and simplicity. We also only target one piece of hardware -- the A100 currently -- but attempt to maintain accessibility by providing options for people with less GPU memory. As as result of all of this, this means that this implementation really doesn't have much in the way of fancy features. It downloads and loads the data, creates the network, runs the training loop and that's about it -- if you want anything on top of that, it should be easily to implement with how modular the code is. That said, feel free to open an issue if there is something critical that I've missed!
+This is a very focused codebase which attempts to maximize code understandability and minimize code length. At the same time, it aims to be very hackable to let people test out new ideas and get back initial results rapidly. We also want to keep this code as accessible as possible to a wide range of users and usecases -- mainly through layout, helpful code comments, and simplicity. We also only target one piece of hardware -- the A100 currently -- but attempt to maintain accessibility by providing options for people with less GPU memory. As as result of all of this, this means that this implementation really doesn't have much in the way of fancy features. It downloads and loads the data, creates the network, runs the training loop and that's about it -- if you want anything on top of that, it should be easily to implement with how modular the code is. That said, feel free to open an issue if there is something critical that I've missed!
 
 
 Finally, this code is meant to be fast -- as fast as possible. Please keep an eye out for further training speedups in future updates, since this is just the baseline after all. This code is in a single file and extremely flat, but is not as durable for long-term production-level bug maintenance. You're meant to check out a fresh repo whenever you have a new idea. Part of the recommended workflow at scale is that if you're at an organization that needs a modified 'base repo', to modify this repo and use that as your new base internally. I oftentimes use a branching tree structure several repos deep in my work and I find it to be a great way to rapidly explore/context switch/roll back between different problem-solving domains. It's also another reason why I keep the base repo so simple.
@@ -44,7 +44,7 @@ Feel free to check out my [Patreon](https://www.patreon.com/user/posts?u=8363213
 
 ### Known Bugs / Potential Problem Areas
 
-The Colab-specific code is commented out at the top, and some of the model weight initialization and flops/mfu/etc calculations might require you to update them manually if you are making significant changes to the network.
+The Colab-specific code is commented out at the top, and some of the model weight initialization and flops/mfu/etc calculations might require you to update them manually if you are making significant changes to the network. There's currently some bugs relating to the dataloader and the number of steps we run doing training -- if just manually measuring the time to get to <3.8 loss, you should be okay for now. Hopefully I'll be able to fix this in a future release.
 
 ### Why 3.8 Val Loss?
 
@@ -64,7 +64,7 @@ If you use this work in your research, please cite
    month={3},
    title={{hlb-gpt}},
    url={https://github.com/tysam-code/hlb-gpt},
-   version = {0.0.0},
+   version = {0.1.0},
    year = {2023}}`
 
 ### Bugs & Etc.
