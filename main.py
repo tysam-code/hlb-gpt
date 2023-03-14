@@ -32,6 +32,9 @@ import tiktoken
 using_pytorch_2 = (int(torch.__version__.split('.')[0]) >= 2)
 if not using_pytorch_2:
     print("Info: Pytorch 2.0 isn't currently installed. Falling back to slower Pytorch 1.x pathway.")
+    torch_compile = lambda func: func
+else:
+    torch_compile = torch.compile
 
 ## <-- teaching comments
 # <-- functional comments
@@ -102,10 +105,10 @@ if not os.path.exists(hyp['misc']['data_location']):
         with zipfile.ZipFile('data_raw/data.zip', 'r') as zip_ref:
             zip_ref.extractall('data_raw/')
 
-        with open('data_raw/wikitext-103-raw/wiki.train.raw', 'r') as data_file:
+        with open('data_raw/wikitext-103-raw/wiki.train.raw', 'r', encoding="utf8") as data_file:
             raw_train_data = data_file.read()
 
-        with open('data_raw/wikitext-103-raw/wiki.valid.raw', 'r') as data_file:
+        with open('data_raw/wikitext-103-raw/wiki.valid.raw', 'r', encoding="utf8") as data_file:
             raw_eval_data = data_file.read()
 
         tokenizer = tiktoken.get_encoding("gpt2")
@@ -328,7 +331,7 @@ def init_split_parameter_dictionaries(net):
 
     return params_non_decay, params_decay
 
-@torch.compile
+@torch_compile
 def get_grad_norm(net):
     # Gets the entire grad norm of the network.
     grad_norm = torch.tensor(0., device=hyp['misc']['device'])
