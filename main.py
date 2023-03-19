@@ -32,9 +32,6 @@ import tiktoken
 using_pytorch_2 = (int(torch.__version__.split('.')[0]) >= 2)
 if not using_pytorch_2:
     print("Info: Pytorch 2.0 isn't currently installed. Falling back to slower Pytorch 1.x pathway.")
-    torch_compile = lambda func: func
-else:
-    torch_compile = torch.compile
 
 ## <-- teaching comments
 # <-- functional comments
@@ -331,7 +328,6 @@ def init_split_parameter_dictionaries(net):
 
     return params_non_decay, params_decay
 
-@torch_compile
 def get_grad_norm(net):
     # Gets the entire grad norm of the network.
     grad_norm = torch.tensor(0., device=hyp['misc']['device'])
