@@ -1,13 +1,14 @@
 # Note: The main change we need to make if we're in Colab is to uncomment this below block (and to add !pip install tiktoken to a cell above).
 # If we are in an ipython session or a notebook, clear the state to avoid bugs
 
-# To enable torch.compile in the code, run the below code and reboot (note: this is risky as this can miss with your installs a bit)
-#pip3 install numpy --pre torch[dynamo] --force-reinstall --extra-index-url https://download.pytorch.org/whl/nightly/cu117
+# To enable torch.compile in the code, don't forget to upgrade to torch 2.0! It's out of prerelease now so not too hard of an install command anymore:
+#pip3 install --upgrade torch
 
 """
 # don't forget these too:
 # !pip3 install tiktoken
-# !pip3 install numpy --pre torch[dynamo] --force-reinstall --extra-index-url https://download.pytorch.org/whl/nightly/cu117
+# If you don't have torch 2.0 on whatever environment you're using:
+# !pip3 install --upgrade torch 
 try:
   _ = get_ipython().__class__.__name__
   ## we set -f below to avoid prompting the user before clearing the notebook state
@@ -55,26 +56,31 @@ if not using_pytorch_2:
 
 # If we run out of memory, we can always increase the accumulate_steps and decrease this by the same factor (2x, 4x, etc).
 # Currently, doing this doesn't result in _exact_ equivalence due to a quirk of implementation, but it should at some point in the future. 
+# NOTE: The more batchsize we can use, the better. Assumes this batchsize is the target value at hyp['misc']['sequence_length']['max'].
 batchsize = 64
 
 # The default model here below is roughly ~29.94M parameters or so.
 hyp = {
     'opt': {
         'lr': 2e-3,
-        'weight_decay': 1.5e-2,
-        'total_train_steps': 6000,
+        'weight_decay': 2e-2,
+        'total_train_steps': 200000,
         'eval_iter': 50, # how many train iterations we wait in between eval rounds (we don't include eval time in our performance stats) 
-        'warmup_percent': .05, ## what percent of the training run to warmup the learning rate over
+        'warmup_percent': .001, ## what percent of the training run to warmup the learning rate over
         'initial_accumulate_steps': 1, # It's good for speed to start small (i.e. 1) here and tune target_per_step_decay carefully to grow to the appropriate num of accumulate steps over traiing
     },
     'net': {
         'residual_depth': 384, ## this should be a factor of 8 in some way to stay tensor core friendly
-        'num_heads': 6,
+        'num_heads': 3,
         'num_blocks': 6,
     },
     'misc': {
         'num_tokens': 50304, # Rounded to the nearest value of 64 for dose sheeeeer speeeeeddssss :D
-        'sequence_length': 256, # Very short sequence length, 
+        'sequence_length': {
+            'max': 512,
+            'initial': 32, # Very short initial sequence length, 
+            'growth_steps': 250, #300, # Increase the sequence length every n steps, up to the maximum limit 
+        },
         'device': 'cuda',
         'dtype': torch.bfloat16,
         'data_location': 'data.pt',
@@ -90,38 +96,38 @@ autocast_tensors = torch.amp.autocast(device_type=hyp['misc']['device'], dtype=h
 #############################################
 
 if not os.path.exists(hyp['misc']['data_location']):
-        print("downloading data and tokenizing (1-2 min)")
+    print("downloading data and tokenizing (1-2 min)")
 
-        raw_data_source = 'https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-raw-v1.zip'
-        raw_data_cache = './data_raw/' # where to cache the data after downloading
-        
-        if not os.path.isfile(raw_data_cache):
-            os.makedirs(raw_data_cache, exist_ok=True)
-            urllib.request.urlretrieve(raw_data_source, raw_data_cache+'data.zip')
+    raw_data_source = 'https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-raw-v1.zip'
+    raw_data_cache = './data_raw/' # where to cache the data after downloading
+    
+    if not os.path.isfile(raw_data_cache):
+        os.makedirs(raw_data_cache, exist_ok=True)
+        urllib.request.urlretrieve(raw_data_source, raw_data_cache+'data.zip')
 
-        with zipfile.ZipFile('data_raw/data.zip', 'r') as zip_ref:
-            zip_ref.extractall('data_raw/')
+    with zipfile.ZipFile('data_raw/data.zip', 'r') as zip_ref:
+        zip_ref.extractall('data_raw/')
 
-        with open('data_raw/wikitext-103-raw/wiki.train.raw', 'r', encoding="utf8") as data_file:
-            raw_train_data = data_file.read()
+    with open('data_raw/wikitext-103-raw/wiki.train.raw', 'r', encoding="utf8") as data_file:
+        raw_train_data = data_file.read()
 
-        with open('data_raw/wikitext-103-raw/wiki.valid.raw', 'r', encoding="utf8") as data_file:
-            raw_eval_data = data_file.read()
+    with open('data_raw/wikitext-103-raw/wiki.valid.raw', 'r', encoding="utf8") as data_file:
+        raw_eval_data = data_file.read()
 
-        tokenizer = tiktoken.get_encoding("gpt2")
-        raw_tokenized_train = tokenizer.encode_ordinary(raw_train_data)
-        raw_tokenized_eval = tokenizer.encode_ordinary(raw_eval_data)
+    tokenizer = tiktoken.get_encoding("gpt2")
+    raw_tokenized_train = tokenizer.encode_ordinary(raw_train_data)
+    raw_tokenized_eval = tokenizer.encode_ordinary(raw_eval_data)
 
-        train_tokenized = torch.tensor(raw_tokenized_train, device=hyp['misc']['device'], dtype=torch.int) # int64 is likely overkill for the amount of tokens we have...
-        eval_tokenized = torch.tensor(raw_tokenized_eval, device=hyp['misc']['device'], dtype=torch.int)
+    train_tokenized = torch.tensor(raw_tokenized_train, device=hyp['misc']['device'], dtype=torch.int) # int64 is likely overkill for the amount of tokens we have...
+    eval_tokenized = torch.tensor(raw_tokenized_eval, device=hyp['misc']['device'], dtype=torch.int)
 
-        data = {
-            'train': train_tokenized,
-            'eval': eval_tokenized
-            }
+    data = {
+        'train': train_tokenized,
+        'eval': eval_tokenized
+        }
 
-        torch.save(data, hyp['misc']['data_location'])
-        print("completed the tokenization process!")
+    torch.save(data, hyp['misc']['data_location'])
+    print("completed the tokenization process!")
 
 else:
     ## This is effectively instantaneous, and takes us practically straight to where the dataloader-loaded dataset would be. :)
@@ -157,15 +163,22 @@ class AttentionBlock(nn.Module):
         # strangely and the parameters are relatively unintuitive in how they are passed. before making any changes,
         # be sure to read https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html thoroughly
         self.attention = nn.MultiheadAttention(num_features, num_heads, bias=False, batch_first=True)
-        
+
+        # Below we set up learnable linear encodings. Similar to https://arxiv.org/abs/2108.12409
+        self.linear_encoding_lr_mult = 50. # hardcoded for now
+        self.linear_encoding_scaler = nn.Parameter(torch.tensor(-.05/self.linear_encoding_lr_mult, device='cuda'))
+        # Note: This is expensive to store for each layer but should be okay for now. #TODO is to refactor if memory becomes an issue for us
+        self.linear_encoding_base = (torch.arange(-sequence_length+1, 1, dtype=torch.float, device=hyp['misc']['device'])).unsqueeze(0) + torch.arange(sequence_length-1, -1, step=-1, dtype=torch.float, device=hyp['misc']['device']).unsqueeze(1)
+        self.linear_encoding_mask = lambda mask, encoding_base, scaler: torch.where(mask, F.softplus(self.linear_encoding_lr_mult*scaler)*encoding_base, torch.empty_like(encoding_base).fill_(-float("inf")))
         ## this mask makes sure that each part of a sequence can only attend to the tokens that come behind it.
-        self.causal_mask = torch.logical_not(torch.triu(torch.ones((sequence_length, sequence_length), device=hyp['misc']['device'], dtype=torch.bool))).T # TODO: way to simplify this? (see: after pytorch 2.0 release, causal=True on the scaled_dot_product_attention fn)
+        self.causal_mask = torch.tril(torch.ones((sequence_length, sequence_length), device=hyp['misc']['device'], dtype=torch.bool)) #torch.logical_not(torch.triu(torch.ones((sequence_length, sequence_length), device=hyp['misc']['device'], dtype=torch.bool))).T # TODO: way to simplify this? (see: after pytorch 2.0 release, causal=True on the scaled_dot_product_attention fn)
 
     def forward(self, x):
         residual = x
         x = self.norm(x)
+        attn_mask = self.linear_encoding_mask(self.causal_mask, self.linear_encoding_base, self.linear_encoding_scaler)
         ## https://youtu.be/kCc8FmEb1nY?t=3720 is a good explanation of self-attention
-        x, _ = self.attention(x, x, x, attn_mask=self.causal_mask, need_weights=False)
+        x, _ = self.attention(x, x, x, attn_mask=attn_mask[:x.shape[1], :x.shape[1]], need_weights=False)
         x = x + residual # haiku
         return x
 
@@ -189,18 +202,6 @@ class MLPBlock(nn.Module):
         return x
 
 
-class PositionEmbedding(nn.Module):
-  def __init__(self, sequence_length, num_features):
-      super().__init__()
-      ## This is a learnable embedding so that the network can tag features by how far back in time they are
-      self.position_embedding = nn.Embedding(sequence_length, num_features)
-  
-  def forward(self, x):
-      # You can customize this function as needed in your experiments. Have fun! :D
-      range_lookup = torch.arange(x.shape[1], device=x.device)
-      return self.position_embedding(range_lookup).unsqueeze(0) # unsqueeze since we only need one value for the entire batch dimension :)
-
-
 #############################################
 #          Init Helper Functions            #
 #############################################
@@ -218,7 +219,7 @@ class SpeedyLangNet(nn.Module):
 
     # This allows you to customize/change the execution order of the network as needed.
     def forward(self, x):
-        x = self.net_dict['embedding'](x) + self.net_dict['position'](x) # We add the learned positional embeddings to the input embeddings in one shot
+        x = self.net_dict['embedding'](x) # Look up the input embeddings
         for block in range(hyp['net']['num_blocks']):
             x = self.net_dict['attn_layers'][block](x) # note: residuals are included in the block definitions for these layers
             x = self.net_dict['mlp_layers'][block](x)  # note: residuals are included in the block definitions for these layers
@@ -230,10 +231,9 @@ def make_net():
     # Note, you have to specify any arguments overlapping with defaults (i.e. everything but in/out depths) as kwargs so that they are properly overridden (TODO cleanup somehow?)
     network_dict = nn.ModuleDict({
         'embedding': nn.Embedding(hyp['misc']['num_tokens'], hyp['net']['residual_depth']),
-        'position': PositionEmbedding(hyp['misc']['sequence_length'], hyp['net']['residual_depth']),
         'norm': LayerNorm(hyp['net']['residual_depth'], bias=False),
         'mlp_layers': nn.ModuleList([MLPBlock(hyp['net']['residual_depth']) for _ in range(hyp['net']['num_blocks'])]),
-        'attn_layers': nn.ModuleList([AttentionBlock(hyp['net']['residual_depth'], hyp['misc']['sequence_length'], hyp['net']['num_heads']) for _ in range(hyp['net']['num_blocks'])]),
+        'attn_layers': nn.ModuleList([AttentionBlock(hyp['net']['residual_depth'], hyp['misc']['sequence_length']['max'], hyp['net']['num_heads']) for _ in range(hyp['net']['num_blocks'])]),
         'outputs': nn.Linear(hyp['net']['residual_depth'], hyp['misc']['num_tokens'], bias=False),
     })
 
@@ -252,7 +252,7 @@ def make_net():
         elif ((('project' in name and 'mlp' in name) or 'out_proj' in name or 'c_proj' in name) and 'weight' in name):
             # As noted in NanoGPT, this is from the GPT-2 paper. Also very similar from what I seee to the FixUp initialization for ResNets
             torch.nn.init.normal_(parameter.data, mean=0., std=.02/((2 * hyp['net']['num_blocks'])**.5)) # keeps variance from exploding when adding to the residual
-        elif 'norm' in name:
+        elif 'norm' in name or 'scaler' in name:
             pass # the norms already get initialized to values that we want -- we just include this so that we can warn the user if they add a new param
                  # that isn't initialized correctly in the future here.
         else:
@@ -262,7 +262,7 @@ def make_net():
     return net
 
 
-def get_net_mfu_and_param_counts(net, batchsize, gradient_accumulation_steps, avg_time_per_batch):
+def get_net_mfu_and_param_counts(net, current_batchsize, current_sequence_length, gradient_accumulation_steps, avg_time_per_batch):
     assert hyp['misc']['dtype'] in (torch.half, torch.bfloat16), "Flops calculation is inaccurate with types other than half-precision types"
     flops_dict = {}
     # The below is a very easy way to estimate total registered param counts. I believe the reason that we don't count the embedding-only layers by default
@@ -273,9 +273,9 @@ def get_net_mfu_and_param_counts(net, batchsize, gradient_accumulation_steps, av
     # Rough flops estimate, see https://github.com/karpathy/nanoGPT/blob/ae3a8d5fdd3ddb8b13fab182723476523961e3ab/model.py#L327 for more info
     # Originally sourced from the PaLM paper, appendix B: https://arxiv.org/abs/2204.02311
     # This includes both the forward and backwards passes :D
-    flops_for_single_input_token = 6 * total_num_params + 12 * hyp['net']['num_blocks'] * hyp['net']['residual_depth'] * hyp['misc']['sequence_length']
-    flops_for_full_sequence = flops_for_single_input_token * hyp['misc']['sequence_length']
-    flops_for_single_step = flops_for_full_sequence * batchsize * gradient_accumulation_steps
+    flops_for_single_input_token = 6 * total_num_params + 12 * hyp['net']['num_blocks'] * hyp['net']['residual_depth'] * current_sequence_length
+    flops_for_full_sequence = flops_for_single_input_token * current_sequence_length
+    flops_for_single_step = flops_for_full_sequence * current_batchsize * gradient_accumulation_steps
 
     current_flops_achieved = flops_for_single_step/avg_time_per_batch
     a100_total_possible_flops = 312e12 # TODO: is there a good way to make this more flexible? 
@@ -295,24 +295,25 @@ def get_net_mfu_and_param_counts(net, batchsize, gradient_accumulation_steps, av
 ########################################
 @torch.no_grad()
 def get_batches(data_dict, key, batchsize, sequence_length, num_steps):
-    # All of the data here is on the GPU, so instead of permuting the underlying data, we just generate random (potentially non-unique) indices to sample.
-    total_steps_in_iter = num_steps * batchsize
-    shuffled = torch.randint(len(data_dict[key]) - sequence_length - 1, (batchsize*num_steps,), device=hyp['misc']['device'])
+    # Generator version of get_batch which is really nice for a for loop if we have static arguments
+    # So, ~!NOTE!~ This means that we assume a fixed batchsize and sequence size for this function!
+    # We recommend using the (unfortunately slightly less fancy) get_batch function for other usecases.
+    total_steps_in_iter = min(len(data_dict[key])//batchsize, num_steps) # the complete number of batches to do
+    for _ in range(total_steps_in_iter):
+        yield get_batch(data_dict, key, batchsize, sequence_length)
 
-    # No augmentation for now (but maybe later?)
-    tokens = data_dict[key].to(hyp['misc']['device'])
- 
-    for idx in range(num_steps):
-        if not (idx+1)*batchsize > shuffled.shape[0]: ## Continue if there are tokens left to consume
-            batch_starting_indexes = shuffled[idx*batchsize:(idx+1)*batchsize]
-            batch_index_offsets = torch.arange(0, sequence_length, dtype=torch.long, device=hyp['misc']['device']) # Create offsets so we can index every item in the sequence
-            batch_indexes = batch_starting_indexes.unsqueeze(-1) + batch_index_offsets.unsqueeze(0)
 
-            # Unfortunately for now we have to flatten this since this seems to be the best way to sample it (then we have to reshape it again at the end)
-            batch_indexes_flattened = batch_indexes.flatten()
+# Get a single batch item. Currently used in the training loop
+def get_batch(data_dict, key, batchsize, sequence_length):
+    shuffled = torch.randint(len(data_dict[key]) - sequence_length - 1, (batchsize,), device=hyp['misc']['device'])
+    batch_index_offsets = torch.arange(0, sequence_length, dtype=torch.long, device=hyp['misc']['device']) # Create offsets so we can index every item in the sequence
+    batch_indexes = shuffled.unsqueeze(-1) + batch_index_offsets.unsqueeze(0)
 
-            yield torch.take_along_dim(tokens, batch_indexes_flattened, dim=0).view(batchsize, sequence_length).long(), \
-                  torch.take_along_dim(tokens, batch_indexes_flattened+1, dim=0).view(batchsize, sequence_length).long() # Returns each token as the input, then the _next_ token in the sequence as a target
+    # Unfortunately for now we have to flatten this since this seems to be the best way to sample it (then we have to reshape it again at the end)
+    batch_indexes_flattened = batch_indexes.flatten()
+
+    return torch.take_along_dim(data_dict[key], batch_indexes_flattened,   dim=0).view(batchsize, sequence_length).long(), \
+           torch.take_along_dim(data_dict[key], batch_indexes_flattened+1, dim=0).view(batchsize, sequence_length).long() # Returns each token as the input, then the _next_ token in the sequence as a target
 
 
 def init_split_parameter_dictionaries(net):
@@ -328,6 +329,7 @@ def init_split_parameter_dictionaries(net):
 
     return params_non_decay, params_decay
 
+
 def get_grad_norm(net):
     # Gets the entire grad norm of the network.
     grad_norm = torch.tensor(0., device=hyp['misc']['device'])
@@ -338,6 +340,21 @@ def get_grad_norm(net):
     grad_norm = (grad_norm ** 0.5).item()
     return grad_norm
 
+
+def grow_sequence_length(current_sequence_length, current_max_batchsize, current_batchsize):
+    old_sequence_length = current_sequence_length
+    # Dynamically grows the sequence length and updates the relevant parameters during training
+    current_sequence_length *= 2
+    current_sequence_length = min(current_sequence_length, hyp['misc']['sequence_length']['max'])
+    current_max_batchsize = round(batchsize * hyp['misc']['sequence_length']['max']/current_sequence_length)
+
+    old_batchsize = current_batchsize
+    if current_batchsize >= current_max_batchsize: # if we're at our peak and we're doubling our sequence length, half the batchsize to keep from OOMing, and then update the virtual steps accordingly
+        current_batchsize = min(current_batchsize // 2, current_max_batchsize)
+
+    print(f"| increasing sequence length (old: {old_sequence_length}, new: {current_sequence_length}), adjusting batchsize as necessary to fit (old: {old_batchsize}, new: {current_batchsize}, current_maximum: {current_max_batchsize})")
+
+    return current_sequence_length, current_max_batchsize, current_batchsize
 
 ## Just your good ol', normal an' nice xentropy function. Which makes sense if (in the ideal scenario) we only see each datapoint one single time.
 ## However! If (esp for tiny datsets) we're seeing our data multiple times in a row, then maybe some smoothing to help regularize things a bit is in order.... :D
@@ -386,7 +403,8 @@ def eval(net):
     loss_list_val, acc_list = [], []
 
     with torch.no_grad():
-        for inputs, targets in get_batches(data, key='eval', batchsize=eval_batchsize, sequence_length=hyp['misc']['sequence_length'], num_steps=num_steps):
+        # Note: We eval at the maximum sequence length so that we can get an idea of how well the sequence length growing scales (generally pretty well, for here at least! :D)
+        for inputs, targets in get_batches(data, key='eval', batchsize=eval_batchsize, sequence_length=hyp['misc']['sequence_length']['max'], num_steps=num_steps):
             with autocast_tensors:
                 outputs = net(inputs)
             val_loss = loss_fn(outputs.flatten(0, 1), targets.flatten(0, 1))
@@ -402,20 +420,21 @@ def eval(net):
 def main():
     # Initializing variables for the whole run.
     total_time_seconds = 0.
-    current_steps = 0
-    #train_loss = 10. # for the updating terminal printout, initialized to roughly the initial loss.
-    grad_norm = 0. # initialize the grad norm calculation
+    microbatch_step = current_steps = 0
     microbatches_since_last_eval = 0. # TODO: Good way to simplify this?
-    running_grad_norm_decay = .95
-    target_per_step_decay = 3e-2 # what absolute step size we should target each training step. the effective batchsize is scaled to try to meet this target. :)
-    accumulate_steps_lr = 5e-2 # smooths out the automatic batchsize scaling rate
-    running_grad_norm = 1.2 # initialized roughly to what the initial grad norm is. the ema that we use for tracking our grad norm over time
-    current_accumulate_steps = accumulate_steps_estimate = hyp['opt']['initial_accumulate_steps'] # current_accumulate_steps is the per-microbatch sampled steps, accumulate_steps_estimate is the actual estimated fractional value determining our projected batchsize
+    tokens_seen = 0
 
-    num_steps_per_epoch = len(data['train']) // (batchsize * hyp['misc']['sequence_length'])
+    # Dynamic growth-related parameters
+    grad_norm = previous_grad_norm = 2. # initialize the grad norm calculation to roughly the initial grad norm
+    target_per_step_decay = 4e-2 # what absolute step size we should target each training step. the effective batchsize is scaled to try to meet this target. :)
+    accumulate_steps_lr = 5e-2 # smooths out the automatic batchsize scaling rate
+    current_accumulate_steps = accumulate_steps_estimate = hyp['opt']['initial_accumulate_steps'] # current_accumulate_steps is the per-microbatch sampled steps, accumulate_steps_estimate is the actual estimated fractional value determining our projected batchsize
+    current_sequence_length = hyp['misc']['sequence_length']['initial']
+    # Start at the maximum allowable batchsize, which is the base batchsize (assumes max sequence length) times the ratio of the max sequence length to the shortest sequence length
+    current_batchsize = batchsize * round(hyp['misc']['sequence_length']['max']/current_sequence_length)
+
     # Note: This is a static calculation of the total number of microbatches up front, you may have to change this depending upon what you're tinkering with
-    total_microbatch_steps = hyp['opt']['total_train_steps'] * hyp['opt']['initial_accumulate_steps'] # BUG: Since we have dynamic virtual batchsize scaling now, we're going to have to rewrite the dataloader to appropriately handle it now.
-    
+    total_microbatch_steps = hyp['opt']['total_train_steps'] * hyp['opt']['initial_accumulate_steps'] # BUG: Since we have dynamic virtual batchsize scaling now, we're going to have to rewrite the dataloader to appropriately handle it now.    
 
     # Get network
     net = make_net()
@@ -430,11 +449,13 @@ def main():
     starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     torch.cuda.synchronize() ## clean up any pre-net setup operations
     starter.record()
-    
+
     # If you have pytorch 2.0, compiling the network before training can help us a ton
     # If you need to/are brave enough, check the top of this file for a pip command to install it.
     # It can bork your pre-existing setup though if you're not careful, so bewarb! D: :D
-    if using_pytorch_2:
+    
+    # Since we're dynamically changing the sequence length during training, we turn off the compiling since that's faster for now.
+    if False: #using_pytorch_2:
         net = torch.compile(net)
 
     #################
@@ -448,7 +469,12 @@ def main():
 
     batch_iter_kwargs = {'data_dict': data, 'key': 'train', 'batchsize': batchsize, 'num_steps': total_microbatch_steps, 'sequence_length': hyp['misc']['sequence_length']}
 
-    for microbatch_step, (inputs, targets) in enumerate(get_batches(**batch_iter_kwargs)):
+    # Step nearly infinitely, as our breaking condition is inside the loop now
+    while current_steps < hyp['opt']['total_train_steps']:
+        # Limit the batchsize each step to keep GPU memory from exploding (TODO might be to consolidate this into the 'grow_sequence_length' function if that ends up being the only place that this variable is primarily relevant)
+        current_max_batchsize = round(batchsize * hyp['misc']['sequence_length']['max']/current_sequence_length)
+        inputs, targets = get_batch(data, key='train', batchsize=current_batchsize, sequence_length=current_sequence_length)
+
         with autocast_tensors:
             outputs = net(inputs)
 
@@ -458,30 +484,34 @@ def main():
         if current_steps % 10 == 0 and microbatch_step % current_accumulate_steps == 0 and not current_steps % hyp['opt']['eval_iter'] == 0:
             train_acc = (outputs.detach().argmax(-1) == targets).float().mean().item()
             train_loss = loss.detach().cpu().item()
-            train_summary_variables = {'epoch': microbatch_step//num_steps_per_epoch, 'current_steps': current_steps, 'train_loss': train_loss, 'train_acc': train_acc, 'grad_norm': grad_norm}
+            train_summary_variables = {'epoch': tokens_seen//len(data['train']), 'current_steps': current_steps, 'train_loss': train_loss, 'train_acc': train_acc, 'grad_norm': grad_norm}
             print_training_details(list(map(partial(format_for_table, locals=train_summary_variables), logging_columns_list)))
 
         loss.div(current_accumulate_steps).backward()
+        tokens_seen += current_batchsize * current_sequence_length
         microbatches_since_last_eval += 1
 
         ## Once we've accumulated steps over all of our microbatches, take a single full-batchsize step.
         if microbatch_step % current_accumulate_steps == 0:
             ## Step the optimizer, then scheduler
             opt.step()
-            # Dynamic weight decay scheduling. Based upon the squared log likelihood of the data [inspired by section 5 of https://arxiv.org/pdf/2204.02311.pdf]
-            # (up to its max value at likelihood = 1, which we should in all...likelihood...never reach. :')))) )
+            # Dynamic weight decay scheduling. Based upon the inverse perplexity of the network over the data [inspired by section 5 of https://arxiv.org/pdf/2204.02311.pdf]
+            # (up to its max value at perplexity = 0, which we should in all...likelihood...never reach. :')))) )
             # Still evaluating the top-end of this option vs a few other options out there.
             opt.param_groups[1]['weight_decay'] = (1./loss.detach().item())**2. * hyp['opt']['weight_decay']
             scheduler.step()
+
+            # Check to see if we need to grow our batchsize according to the scheduler (or some potential future growing criteria :D)
+            if current_steps % hyp['misc']['sequence_length']['growth_steps'] == 0 and current_steps != 0 and current_sequence_length < hyp['misc']['sequence_length']['max']:
+                current_sequence_length, current_max_batchsize, current_batchsize = grow_sequence_length(current_sequence_length, current_max_batchsize, current_batchsize)
 
             # The next several lines calculate a dynamic batchsize, simulated through manual dithering
             # There could be improvements or losses in changing the dithering strategy, since determinism and gradient descent can lead to some very not-so-nice (and subtle) loss oscillations.
             # First, manually calculate the grad norm here (no clipping or anything)
             grad_norm = get_grad_norm(net) # TODO: Can/should we evaluate every N steps instead?
-            
-            running_grad_norm = running_grad_norm_decay * running_grad_norm + (1. - running_grad_norm_decay) * grad_norm
 
-            per_step_diff_delta = target_per_step_decay - (running_grad_norm - grad_norm)
+            per_step_diff_delta = target_per_step_decay - (previous_grad_norm - grad_norm)
+            previous_grad_norm = grad_norm
             # Scale the learning rate by the current number of accumulate steps so we're able to be nimble even if steps take a very long time
             accumulate_steps_estimate += current_accumulate_steps * (accumulate_steps_lr * per_step_diff_delta)
             # Clamp our fractional accumulate steps estimate so it doesn't go below 1
@@ -495,7 +525,7 @@ def main():
             current_steps += 1
 
             # Since we're not running over epochs anymore, we have to manually calculate what epoch it is.
-            epoch = microbatch_step//num_steps_per_epoch
+            epoch = tokens_seen//len(data['train'])
 
             if current_steps % hyp['opt']['eval_iter'] == 0:
                 ender.record()
@@ -508,7 +538,7 @@ def main():
 
                 val_acc, val_loss, val_perplexity = eval(net)
                 average_time_per_batch = 1e-3 * starter.elapsed_time(ender)/hyp['opt']['eval_iter']
-                a100_mfu, _ = get_net_mfu_and_param_counts(net, batchsize, microbatches_since_last_eval/hyp['opt']['eval_iter'], avg_time_per_batch=average_time_per_batch)
+                a100_mfu, _ = get_net_mfu_and_param_counts(net, current_batchsize, current_sequence_length, microbatches_since_last_eval/hyp['opt']['eval_iter'], avg_time_per_batch=average_time_per_batch)
                 microbatches_since_last_eval = 0 # necessary for accurate mfu counts. How totally necessary is mfu here if we're mainly using wallclock time?
                 is_final_eval = (current_steps == hyp['opt']['total_train_steps']) # If we're at the end of training, do a full eval instead
 
@@ -518,14 +548,14 @@ def main():
                 torch.cuda.synchronize()
                 starter.record()
                 net.train() # Functionally shouldn't do anything with the base network, just adding this to guard against any bugs for any future changes that do require this <3 <3 <3
-
+        microbatch_step += 1
 
     return net.eval(), val_loss # Return the final validation loss achieved (not using the 'best validation loss' selection strategy, which I think is okay here....)
 
 
 if __name__ == "__main__":
     val_loss_list = []
-    for i in range(5):
+    for _ in range(5):
         _, val_loss = main()
         val_loss_list.append(val_loss)
     print(f"Average final val loss: {sum(val_loss_list)/len(val_loss_list)}") # TODO add variance as well, later
