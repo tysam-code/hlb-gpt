@@ -59,11 +59,11 @@ if not using_pytorch_2:
 # NOTE: The more batchsize we can use, the better. Assumes this batchsize is the target value at hyp['misc']['sequence_length']['max'].
 batchsize = 64
 
-# The default model here below is roughly ~29.94M parameters or so.
+# The default model here below is roughly ~30.82M parameters or so.
 hyp = {
     'opt': {
         'lr': 2e-3,
-        'weight_decay': 2e-2,
+        'weight_decay': 3e-2,
         'total_train_steps': 200000,
         'eval_iter': 50, # how many train iterations we wait in between eval rounds (we don't include eval time in our performance stats) 
         'warmup_percent': .001, ## what percent of the training run to warmup the learning rate over
@@ -79,17 +79,13 @@ hyp = {
         'sequence_length': {
             'max': 512,
             'initial': 32, # Very short initial sequence length, 
-            'growth_steps': 250, #300, # Increase the sequence length every n steps, up to the maximum limit 
+            'growth_steps': 195, # Increase the sequence length every n steps, up to the maximum limit 
         },
         'device': 'cuda',
         'dtype': torch.bfloat16,
         'data_location': 'data.pt',
     }
 }
-
-torch.backends.cuda.matmul.allow_tf32 = True # allows us to make sure we're able to use tensorfloat32 during training
-torch.backends.cudnn.allow_tf32 = True
-autocast_tensors = torch.amp.autocast(device_type=hyp['misc']['device'], dtype=hyp['misc']['dtype'])
 
 #############################################
 #                Dataloader                 #
@@ -153,7 +149,6 @@ class LayerNorm(nn.Module):
     def forward(self, x):
         return F.layer_norm(x, self.weight.shape, weight=self.weight, bias=self.bias, eps=self.eps)
 
-
 class AttentionBlock(nn.Module):
     """ A standard attention block (for now....?) """
     def __init__(self, num_features, sequence_length, num_heads):
@@ -165,11 +160,11 @@ class AttentionBlock(nn.Module):
         self.attention = nn.MultiheadAttention(num_features, num_heads, bias=False, batch_first=True)
 
         # Below we set up learnable linear encodings. Similar to https://arxiv.org/abs/2108.12409
-        self.linear_encoding_lr_mult = 50. # hardcoded for now
-        self.linear_encoding_scaler = nn.Parameter(torch.tensor(-.05/self.linear_encoding_lr_mult, device='cuda'))
+        self.linear_encoding_lr_mult = 100. # hardcoded for now
+        self.linear_encoding_scaler = nn.Parameter(torch.tensor(1./self.linear_encoding_lr_mult, device='cuda'))
         # Note: This is expensive to store for each layer but should be okay for now. #TODO is to refactor if memory becomes an issue for us
-        self.linear_encoding_base = (torch.arange(-sequence_length+1, 1, dtype=torch.float, device=hyp['misc']['device'])).unsqueeze(0) + torch.arange(sequence_length-1, -1, step=-1, dtype=torch.float, device=hyp['misc']['device']).unsqueeze(1)
-        self.linear_encoding_mask = lambda mask, encoding_base, scaler: torch.where(mask, F.softplus(self.linear_encoding_lr_mult*scaler)*encoding_base, torch.empty_like(encoding_base).fill_(-float("inf")))
+        self.linear_encoding_base = (torch.arange(-sequence_length+1, 1, dtype=torch.bfloat16, device=hyp['misc']['device'])).unsqueeze(0) + torch.arange(sequence_length-1, -1, step=-1, dtype=torch.bfloat16, device=hyp['misc']['device']).unsqueeze(1)
+        self.linear_encoding_mask = lambda mask, encoding_base, scaler: torch.where(mask, F.softplus(self.linear_encoding_lr_mult*scaler)*encoding_base, torch.empty_like(encoding_base, dtype=torch.bfloat16).fill_(-float("inf")))
         ## this mask makes sure that each part of a sequence can only attend to the tokens that come behind it.
         self.causal_mask = torch.tril(torch.ones((sequence_length, sequence_length), device=hyp['misc']['device'], dtype=torch.bool)) #torch.logical_not(torch.triu(torch.ones((sequence_length, sequence_length), device=hyp['misc']['device'], dtype=torch.bool))).T # TODO: way to simplify this? (see: after pytorch 2.0 release, causal=True on the scaled_dot_product_attention fn)
 
@@ -182,21 +177,31 @@ class AttentionBlock(nn.Module):
         x = x + residual # haiku
         return x
 
+class SiGLU(nn.Module):
+    """ Implements the SiLU-gated linear unit from that one gated linear units paper. Assumes the channel tensors are stacked. """
+    def __init__(self):
+        super().__init__()
+        self.activation = nn.SiLU()
+    
+    def forward(self, x, dim=-1):
+        x = x.split((x.shape[-1]//2, x.shape[-1]//2), dim=dim)
+        x = x[0] * self.activation(x[1])
+        return x
 
 class MLPBlock(nn.Module):
     """ A standard MLP block (for now....?) """
-    def __init__(self, num_channels, expansion_factor=4):
+    def __init__(self, num_channels, expansion_factor=3):
         super().__init__()
         self.norm = LayerNorm(num_channels, bias=False)
-        self.expand = nn.Linear(num_channels, num_channels*expansion_factor, bias=False)
+        self.expand = nn.Linear(num_channels, num_channels*2*expansion_factor, bias=False)
         self.project = nn.Linear(expansion_factor*num_channels, num_channels, bias=False)
-        self.activation = nn.GELU()
+        self.siglu = SiGLU()
     
     def forward(self, x):
         residual = x
         x = self.norm(x)
         x = self.expand(x)
-        x = self.activation(x)
+        x = self.siglu(x)
         x = self.project(x)
         x = x + residual # haiku
         return x
@@ -230,7 +235,7 @@ class SpeedyLangNet(nn.Module):
 def make_net():
     # Note, you have to specify any arguments overlapping with defaults (i.e. everything but in/out depths) as kwargs so that they are properly overridden (TODO cleanup somehow?)
     network_dict = nn.ModuleDict({
-        'embedding': nn.Embedding(hyp['misc']['num_tokens'], hyp['net']['residual_depth']),
+        'embedding': nn.Embedding(hyp['misc']['num_tokens'], hyp['net']['residual_depth'], scale_grad_by_freq=True),
         'norm': LayerNorm(hyp['net']['residual_depth'], bias=False),
         'mlp_layers': nn.ModuleList([MLPBlock(hyp['net']['residual_depth']) for _ in range(hyp['net']['num_blocks'])]),
         'attn_layers': nn.ModuleList([AttentionBlock(hyp['net']['residual_depth'], hyp['misc']['sequence_length']['max'], hyp['net']['num_heads']) for _ in range(hyp['net']['num_blocks'])]),
@@ -238,7 +243,7 @@ def make_net():
     })
 
     net = SpeedyLangNet(network_dict)
-    net = net.to(hyp['misc']['device'])
+    net = net.to(hyp['misc']['device'], torch.bfloat16)
     net.train()
 
     # Tie the input and output weights. Feel free to experiment with this!
@@ -247,9 +252,9 @@ def make_net():
     for name, parameter in net.named_parameters():
         # TODO: Way to tidy this up for a future release? (once pytorch 2.0 releases we can use the scaled_dot_product attention, update the names appropriately, and point to an older release for people using PT <2.0)
         # Initialize both embedding layers (embedding and position) and the non-bias values of the 'normal' linear layers (outputs, expand, in_proj)
-        if 'embedding' in name or 'position' in name or (('outputs' in name or 'expand' in name or 'in_proj' in name) and 'weight' in name):
+        if 'embedding' in name or 'position' in name or (('expand' in name or 'in_proj' in name or 'outputs' in name) and 'weight' in name):
             torch.nn.init.normal_(parameter.data, mean=0., std=.02) # normal init
-        elif ((('project' in name and 'mlp' in name) or 'out_proj' in name or 'c_proj' in name) and 'weight' in name):
+        elif ((('project' in name and 'mlp' in name) or 'out_proj' in name) and 'weight' in name):
             # As noted in NanoGPT, this is from the GPT-2 paper. Also very similar from what I seee to the FixUp initialization for ResNets
             torch.nn.init.normal_(parameter.data, mean=0., std=.02/((2 * hyp['net']['num_blocks'])**.5)) # keeps variance from exploding when adding to the residual
         elif 'norm' in name or 'scaler' in name:
@@ -281,7 +286,7 @@ def get_net_mfu_and_param_counts(net, current_batchsize, current_sequence_length
     a100_total_possible_flops = 312e12 # TODO: is there a good way to make this more flexible? 
     mfu_value = current_flops_achieved / a100_total_possible_flops
 
-    return mfu_value, params_dict
+    return mfu_value, params_dict, total_num_params
 
 
 #############################################
@@ -317,12 +322,12 @@ def get_batch(data_dict, key, batchsize, sequence_length):
 
 
 def init_split_parameter_dictionaries(net):
-    params_non_decay = {'params': [], 'lr': hyp['opt']['lr'], 'eps': 1e-8, 'betas': (.9, .95), 'weight_decay': 0.}
-    params_decay     = {'params': [], 'lr': hyp['opt']['lr'], 'eps': 1e-8, 'betas': (.9, .95), 'weight_decay': hyp['opt']['weight_decay']}
+    params_non_decay = {'params': [], 'lr': hyp['opt']['lr'], 'eps': 1e-9, 'betas': (.9, .95), 'weight_decay': 0.}
+    params_decay     = {'params': [], 'lr': hyp['opt']['lr'], 'eps': 1e-9, 'betas': (.9, .95), 'weight_decay': hyp['opt']['weight_decay']}
 
     for name, p in net.named_parameters():
         if p.requires_grad:
-            if 'outputs' in name or 'norm' in name or 'embedding' in name or 'position' in name or 'bias' in name:
+            if 'outputs' in name or 'norm' in name or 'embedding' in name or 'bias' in name:
                 params_non_decay['params'].append(p)
             else:
                 params_decay['params'].append(p) # Default to weight decay unless we explicitly specify that we don't want to use it
@@ -399,14 +404,13 @@ def eval(net):
     ####################
 
     eval_batchsize = 64 # Note/semi-warning: This is slightly 'buggy' technically as it will drop the last batch in the eval set, but that should just add a bit of noise for our usecases
-    num_steps = 24 # Do a slightly noisy fast eval (that should be good enough for our purposes)
+    num_steps = 32 # Do a slightly noisy fast eval (that should be good enough for our purposes)
     loss_list_val, acc_list = [], []
 
     with torch.no_grad():
         # Note: We eval at the maximum sequence length so that we can get an idea of how well the sequence length growing scales (generally pretty well, for here at least! :D)
         for inputs, targets in get_batches(data, key='eval', batchsize=eval_batchsize, sequence_length=hyp['misc']['sequence_length']['max'], num_steps=num_steps):
-            with autocast_tensors:
-                outputs = net(inputs)
+            outputs = net(inputs)
             val_loss = loss_fn(outputs.flatten(0, 1), targets.flatten(0, 1))
             loss_list_val.append(val_loss)
             acc_list.append((outputs.argmax(-1) == targets).float().mean())
@@ -426,8 +430,8 @@ def main():
 
     # Dynamic growth-related parameters
     grad_norm = previous_grad_norm = 2. # initialize the grad norm calculation to roughly the initial grad norm
-    target_per_step_decay = 4e-2 # what absolute step size we should target each training step. the effective batchsize is scaled to try to meet this target. :)
-    accumulate_steps_lr = 5e-2 # smooths out the automatic batchsize scaling rate
+    target_per_step_decay = 3.6e-2 # what absolute step size we should target each training step. the effective batchsize is scaled to try to meet this target. :)
+    accumulate_steps_lr = 1e-1 # smooths out the automatic batchsize scaling rate
     current_accumulate_steps = accumulate_steps_estimate = hyp['opt']['initial_accumulate_steps'] # current_accumulate_steps is the per-microbatch sampled steps, accumulate_steps_estimate is the actual estimated fractional value determining our projected batchsize
     current_sequence_length = hyp['misc']['sequence_length']['initial']
     # Start at the maximum allowable batchsize, which is the base batchsize (assumes max sequence length) times the ratio of the max sequence length to the shortest sequence length
@@ -454,7 +458,7 @@ def main():
     # If you need to/are brave enough, check the top of this file for a pip command to install it.
     # It can bork your pre-existing setup though if you're not careful, so bewarb! D: :D
     
-    # Since we're dynamically changing the sequence length during training, we turn off the compiling since that's faster for now.
+    # Since we're dynamically changing the sequence length during training, we've turned off the compiling since that's faster for now.
     if False: #using_pytorch_2:
         net = torch.compile(net)
 
@@ -475,8 +479,7 @@ def main():
         current_max_batchsize = round(batchsize * hyp['misc']['sequence_length']['max']/current_sequence_length)
         inputs, targets = get_batch(data, key='train', batchsize=current_batchsize, sequence_length=current_sequence_length)
 
-        with autocast_tensors:
-            outputs = net(inputs)
+        outputs = net(inputs)
 
         loss = loss_fn(outputs.flatten(0, 1), targets.flatten(0, 1))
 
@@ -534,11 +537,13 @@ def main():
                 train_loss = loss.detach().cpu().item() # To have an updated loss to compare with the eval loss
 
                 opt.zero_grad(set_to_none=True)
-                net.eval()
+                # Potential # bug warning: We're disabling the eval switch here as the nn.MultiheadAttention class fails in eval mode w/ a pure bfloat16 network. Functionally they should be the same; however, care should be taken if implementing something with clear differences between train and eval, like dropout.
+                #net.eval()
 
                 val_acc, val_loss, val_perplexity = eval(net)
                 average_time_per_batch = 1e-3 * starter.elapsed_time(ender)/hyp['opt']['eval_iter']
-                a100_mfu, _ = get_net_mfu_and_param_counts(net, current_batchsize, current_sequence_length, microbatches_since_last_eval/hyp['opt']['eval_iter'], avg_time_per_batch=average_time_per_batch)
+                # You can use this variable to print out the parameter counts of the network if you want, though we aren't printing this out in this particular version.
+                a100_mfu, _, param_counts = get_net_mfu_and_param_counts(net, current_batchsize, current_sequence_length, microbatches_since_last_eval/hyp['opt']['eval_iter'], avg_time_per_batch=average_time_per_batch)
                 microbatches_since_last_eval = 0 # necessary for accurate mfu counts. How totally necessary is mfu here if we're mainly using wallclock time?
                 is_final_eval = (current_steps == hyp['opt']['total_train_steps']) # If we're at the end of training, do a full eval instead
 
@@ -550,7 +555,7 @@ def main():
                 net.train() # Functionally shouldn't do anything with the base network, just adding this to guard against any bugs for any future changes that do require this <3 <3 <3
         microbatch_step += 1
 
-    return net.eval(), val_loss # Return the final validation loss achieved (not using the 'best validation loss' selection strategy, which I think is okay here....)
+    return net, val_loss # Return the final validation loss achieved (not using the 'best validation loss' selection strategy, which I think is okay here....)
 
 
 if __name__ == "__main__":
