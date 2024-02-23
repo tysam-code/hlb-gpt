@@ -16,15 +16,13 @@ try:
 except NameError:
   pass ## we're still good
 """
-import functools
 from functools import partial
-import urllib
-import zipfile
 import os
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+import datasets
 
 # This seems like one of the best choices right now for a fast/lightweight/simple tokenizer.
 import tiktoken
@@ -94,20 +92,21 @@ hyp = {
 if not os.path.exists(hyp['misc']['data_location']):
     print("downloading data and tokenizing (1-2 min)")
 
-    raw_data_source = 'https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-raw-v1.zip'
     raw_data_cache = './data_raw/' # where to cache the data after downloading
     
     if not os.path.isfile(raw_data_cache):
         os.makedirs(raw_data_cache, exist_ok=True)
-        urllib.request.urlretrieve(raw_data_source, raw_data_cache+'data.zip')
-
-    with zipfile.ZipFile('data_raw/data.zip', 'r') as zip_ref:
-        zip_ref.extractall('data_raw/')
-
-    with open('data_raw/wikitext-103-raw/wiki.train.raw', 'r', encoding="utf8") as data_file:
+        wikitext_train = datasets.load_dataset('wikitext', 'wikitext-103-raw-v1', cache_dir=raw_data_cache, split="train")
+        wikitext_eval = datasets.load_dataset('wikitext', 'wikitext-103-raw-v1', cache_dir=raw_data_cache, split="validation")
+        with open(raw_data_cache+'wiki.train.txt', 'w', encoding="utf8") as data_file:
+            data_file.write("".join(wikitext_train['text']))
+        with open(raw_data_cache+'wiki.valid.txt', 'w', encoding="utf8") as data_file:
+            data_file.write("".join(wikitext_eval['text']))
+            
+    with open('data_raw/wiki.train.txt', 'r', encoding="utf8") as data_file:
         raw_train_data = data_file.read()
 
-    with open('data_raw/wikitext-103-raw/wiki.valid.raw', 'r', encoding="utf8") as data_file:
+    with open('data_raw/wiki.valid.txt', 'r', encoding="utf8") as data_file:
         raw_eval_data = data_file.read()
 
     tokenizer = tiktoken.get_encoding("gpt2")
