@@ -76,7 +76,7 @@ hyp = {
             'non_dot_products': 32.,
             'output_layer': 2.,
         },
-        'weight_decay': 2.**5,     # This is the weight decay when the loss = 0., we approach it exponentially. Somewhat slows overfitting.
+        'weight_decay': 2.**4,     # This is the weight decay when the loss = 0., we approach it exponentially. Somewhat slows overfitting.
         'total_train_steps': 1000, # We can run effectively infinitely, but is 1000 by default for the inference demo. For infinite runs, you can use the saved checkpoints from disk.
         'microbatch': {            # The microbatch scheduler assumes a power law decay schedule for the grad norm, and adjusts the microbatch size (minimum 1) to enforce it.
             'sample_every': 5,     # Sampling grad norm can be a bit expensive, so we do it every n steps instead.
@@ -207,16 +207,16 @@ class LatentAttentionBlock(nn.Module):
         query, key, linear, pre_gelu = F.linear(x, self.expand).split((self.qk_dim, self.qk_dim, self.expand_dim, self.expand_dim), dim=-1)
 
         # Compute GeGLU (one portion of the channels this will stay locally, another will become the nonlinear value for attention)
-        mult = linear * F.gelu(pre_gelu)
+        geglu = linear * F.gelu(pre_gelu)
 
         # Partition between the input values and the v dim values
-        mult, value = mult.split((self.expand_dim-self.v_dim, self.v_dim), -1)
+        geglu_local, geglu_attention_value = geglu.split((self.expand_dim-self.v_dim, self.v_dim), -1)
 
         # Compute attention. Something to note is that there are no attention heads here. This seemed to work a bit better, maybe due to not needing memory `.contiguous()` calls or similar
-        attention = F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
+        attention = F.scaled_dot_product_attention(query, key, geglu_attention_value, attn_mask=attn_mask)
 
         # Output linear layer
-        out = F.linear(torch.cat([mult, attention], dim=-1), self.project)
+        out = F.linear(torch.cat([geglu_local, attention], dim=-1), self.project)
 
         # Add to residual
         x = residual + out
@@ -458,7 +458,7 @@ def main():
     base_lr = 9e7 / math.log(total_trainable_params)**8.8
 
     # The base value that we raise to the value of our loss in order to determine how much weight decay we need (exponentially strong as we approach 0.)
-    weight_decay_pow_base = .006 * ((.01 * math.log(total_trainable_params))) ** (-4)
+    weight_decay_pow_base = .007 * ((.01 * math.log(total_trainable_params))) ** (-4)
 
     # This defines how quickly we expect grad_norm drops for microbatch scheduling -- slightly faster for smaller models, slightly slower for larger models
     # Note: This will interact with really aggressive weight decay, some training runs may slow down a lot near the end as a result.
@@ -602,3 +602,4 @@ import textwrap
 with torch.no_grad():
     print("\nprompt: \n", textwrap.fill(tokenizer.decode(tokenized_demo_sentence.squeeze().cpu().numpy()), 80,  replace_whitespace=False))
     print("decoded result: \n", textwrap.fill(tokenizer.decode(inference(tokenized_demo_sentence).squeeze().cpu().numpy()), 80,  replace_whitespace=False))
+
