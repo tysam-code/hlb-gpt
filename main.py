@@ -11,7 +11,6 @@ try:
 except NameError:
   pass ## we're still good
 """
-import functools
 from functools import partial
 import subprocess
 
